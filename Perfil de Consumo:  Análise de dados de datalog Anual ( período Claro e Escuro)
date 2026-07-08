@@ -1,0 +1,191 @@
+/**
+ * PROJETO DE AUTOCONSUMO - IPB 2025/26
+ */
+
+function onEdit(e) {
+  if (!e) return;
+  var ss = e.source;
+  var sheet = ss.getActiveSheet();
+  if (sheet.getName() == "DASHBOARD" && ["B3", "D3", "F3", "H3"].includes(e.range.getA1Notation())) {
+    processarDadosProjetoAutoconsumo();
+  }
+}
+
+function processarDadosProjetoAutoconsumo() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var dash = ss.getSheetByName("DASHBOARD");
+  ss.toast("A sincronizar dados do IPB...", "Engenharia", 2);
+
+  var tipo = dash.getRange("B3").getValue();
+  var mesNome = dash.getRange("D3").getValue();
+  var semTxt = dash.getRange("F3").getValue();
+  var diaSel = dash.getRange("H3").getValue();
+  
+  var matriz = [];
+  var aba = ss.getSheetByName(mesNome);
+
+  // --- 1. PRIORIDADE: LÓGICA DIÁRIA ---
+  if (tipo == "Diária") {
+    matriz.push(["Hora", "Potência (W)"]);
+    if (aba && diaSel != "") {
+      var v = aba.getDataRange().getValues();
+      var dNum = parseInt(diaSel.toString().replace(/\D/g, "")) || 1;
+      
+      // Coordenadas Don: Dia 1 (C1:C24) -> Coluna 2, Linha 0
+      var lIni = (dNum - 1) * 24;
+      var col = 2 + (dNum - 1) * 3;
+
+      for (var i = 0; i < 24; i++) {
+        var hLabel = (i + 1) + ":00";
+        var valor = (v[lIni + i] && v[lIni + i][col] !== undefined) ? v[lIni + i][col] : 0;
+        matriz.push([hLabel, valor]);
+      }
+    }
+  }
+
+  // --- 2. LÓGICA ANUAL ---
+  else if (tipo == "Anual") {
+    matriz.push(["Mês", "Energia (kWh/mês)"]);
+    var meses = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
+    meses.forEach(function(m) {
+      var sh = ss.getSheetByName(m);
+      if (sh) {
+        var vAnual = sh.getDataRange().getValues();
+        var somaM = 0;
+        for (var d = 1; d <= 31; d++) {
+          var l = (d-1)*24, c = 2+(d-1)*3;
+          if (vAnual[l]) for (var k=0; k<24; k++) if (vAnual[l+k] && vAnual[l+k][c]) somaM += vAnual[l+k][c];
+        }
+        matriz.push([m, somaM/1000]);
+      }
+    });
+  }
+
+  // --- 3. LÓGICA MENSAL / SEMANAL ---
+  else if ((tipo == "Mensal" || tipo == "Semanal") && aba) {
+    matriz.push(["Dia", "Energia (kWh)"]);
+    var vMS = aba.getDataRange().getValues();
+    var dS = 1, dE = 31;
+    if (tipo == "Semanal") {
+      var n = parseInt(semTxt.toString().replace(/\D/g, "")) || 1;
+      dS = (n-1)*7+1; dE = dS+6;
+    }
+    for (var d = dS; d <= dE; d++) {
+      var l = (d-1)*24, c = 2+(d-1)*3;
+      if (vMS[l]) {
+        var sD = 0;
+        for (var i=0; i<24; i++) if (vMS[l+i] && vMS[l+i][c]) sD += vMS[l+i][c];
+        matriz.push(["Dia " + d, sD/1000]);
+      }
+    }
+  }
+
+  // --- ESCRITA FINAL NA ABA PLOT_DADOS ---
+  var plot = ss.getSheetByName("PLOT_DADOS") || ss.insertSheet("PLOT_DADOS");
+  plot.clear(); 
+  
+  if (matriz.length > 1) {
+    plot.getRange(1, 1, matriz.length, 2).setValues(matriz);
+    calcularEstatisticasDon(tipo, matriz);
+  
+    var somaM = 0;
+    for (var k = 1; k < matriz.length; k++) somaM += matriz[k][1];
+    var resJ3 = 0, uni = "";
+
+    if (tipo == "Anual") { resJ3 = somaM/(matriz.length-1); uni = " kWh/mês"; }
+    else if (tipo == "Diária") { resJ3 = somaM/1000; uni = " kWh"; }
+    else { resJ3 = somaM/(matriz.length-1); uni = " kWh/dia"; }
+
+    dash.getRange("J3").setValue(resJ3.toFixed(2) + uni);
+    ss.toast("Análise concluída!", "Sucesso", 2);
+  }
+
+/**
+ * BLOCO ESTATÍSTICAS HEREDITÁRIAS V3
+ */
+
+function calcularEstatisticasDon(tipo, matriz) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var dash = ss.getSheetByName("DASHBOARD");
+  
+  // 1. LIMPEZA TOTAL (Garante que tudo desaparece ao mudar o tipo)
+  dash.getRange("K2:K6").clearContent();
+  dash.getRange("L2:L6").clearContent();
+  dash.getRange("M2:M5").clearContent();
+  dash.getRange("N2:N4").clearContent();
+  dash.getRange("O2:O3").clearContent();
+
+  // 2. TÍTULOS FIXOS (Linha 1) - Mantém a organização
+  dash.getRange("L1:O1").setFontWeight("bold");
+  dash.getRange("L1").setValue("ANUAL");
+  dash.getRange("M1").setValue("MENSAL");
+  dash.getRange("N1").setValue("SEMANAL");
+  dash.getRange("O1").setValue("DIÁRIO");
+
+  if (matriz.length <= 1) return;
+
+  // Cálculo da Soma Total
+  var somaTotal = 0;
+  for (var i = 1; i < matriz.length; i++) {
+    somaTotal += matriz[i][1];
+  }
+
+  // --- LÓGICA POR ESCOLHA DO OPERADOR ---
+
+  if (tipo == "Anual") {
+    var anual = somaTotal;
+    // Valores (L)
+    dash.getRange("L2").setValue(anual.toFixed(2) + " kWh");
+    dash.getRange("L3").setValue((anual / 365).toFixed(2) + " kWh/dia");
+    dash.getRange("L4").setValue((anual / (365 * 24)).toFixed(4) + " kWh/h");
+    dash.getRange("L5").setValue((anual / 52).toFixed(2) + " kWh/sem");
+    dash.getRange("L6").setValue((anual / 12).toFixed(2) + " kWh/mês");
+    // Legendas em K
+    dash.getRange("K2").setValue("Consumo Anual:");
+    dash.getRange("K3").setValue("Consumo Médio Diário:");
+    dash.getRange("K4").setValue("Consumo Médio Horário:");
+    dash.getRange("K5").setValue("Consumo Médio Semanal:");
+    dash.getRange("K6").setValue("Consumo Médio Mensal:");
+  }
+
+  else if (tipo == "Mensal") {
+    var mensal = somaTotal;
+    // Valores (M)
+    dash.getRange("M2").setValue(mensal.toFixed(2) + " kWh");
+    dash.getRange("M3").setValue((mensal / 30).toFixed(2) + " kWh/dia");
+    dash.getRange("M4").setValue((mensal / (30 * 24)).toFixed(4) + " kWh/h");
+    dash.getRange("M5").setValue((mensal / 4).toFixed(2) + " kWh/sem");
+    // Legendas em K
+    dash.getRange("K2").setValue("Consumo Mensal:");
+    dash.getRange("K3").setValue("Consumo Médio Diário:");
+    dash.getRange("K4").setValue("Consumo Médio Horário:");
+    dash.getRange("K5").setValue("Consumo Médio Semanal:");
+  }
+
+  else if (tipo == "Semanal") {
+    var semanal = somaTotal;
+    // Valores (N)
+    dash.getRange("N2").setValue(semanal.toFixed(2) + " kWh");
+    dash.getRange("N3").setValue((semanal / 7).toFixed(2) + " kWh/dia");
+    dash.getRange("N4").setValue((semanal / (7 * 24)).toFixed(4) + " kWh/h");
+    // Legendas em K
+    dash.getRange("K2").setValue("Consumo Semanal:");
+    dash.getRange("K3").setValue("Consumo Médio Diário:");
+    dash.getRange("K4").setValue("Consumo Médio Horário:");
+  }
+
+  else if (tipo == "Diária") {
+    var diario = somaTotal / 1000; // Conversão de Watts para kWh
+    // Valores (O)
+    dash.getRange("O2").setValue(diario.toFixed(2) + " kWh");
+    dash.getRange("O3").setValue((diario / 24).toFixed(4) + " kWh/h");
+    // Legendas em K
+    dash.getRange("K2").setValue("O consumo no dia:");
+    dash.getRange("K3").setValue("Consumo por hora:");
+  }
+}
+
+}
+
+
+
