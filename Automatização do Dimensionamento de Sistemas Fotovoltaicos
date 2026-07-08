@@ -1,0 +1,208 @@
+function atualizarMenusSuspensos() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var dash = ss.getSheetByName("Dashboard");
+  var modSheet = ss.getSheetByName("Modulos");
+  var invSheet = ss.getSheetByName("Inversores");
+
+  // Cria uma regra que aponta diretamente para toda a coluna A (a partir da linha 2)
+  var rangeModulos = modSheet.getRange("A2:A");
+  var regraMod = SpreadsheetApp.newDataValidation()
+    .requireValueInRange(rangeModulos, true)
+    .build();
+  
+  // Aplica a regra ao M3
+  dash.getRange("M3").setDataValidation(regraMod);
+
+  // Faz o mesmo para os Inversores
+  var rangeInversores = invSheet.getRange("A2:A");
+  var regraInv = SpreadsheetApp.newDataValidation()
+    .requireValueInRange(rangeInversores, true)
+    .build();
+  
+  // Aplica a regra ao M5
+  dash.getRange("M5").setDataValidation(regraInv);
+
+  SpreadsheetApp.getUi().alert("Menus atualizados! A partir de agora vão atualizar sozinhos.");
+}
+/**
+ * CÁLCULOS TÉRMICOS (O AJUDANTE)
+ * Garante que a corrente sobe no calor e a tensão sobe no frio.
+ */
+function atribuirCalculosTemperatura(dash, m) {
+  if (!m) return null;
+
+  var pSTC = m[1], vocSTC = m[2], vmpSTC = m[3], iscSTC = m[4], impSTC = m[5];
+  var kV = m[6], kI = m[7], kP = m[8]; 
+
+  var qtdTotalModulos = dash.getRange("M7").getValue() || 0;
+  var paralelos = dash.getRange("M13").getValue() || 1; // <-- ADICIONADO: Busca a quantidade de paralelos
+  
+  var dF = -31; // Frio (-6°C)
+  var dC = 45;  // Calor (70°C)
+
+  // CÁLCULOS (Lógica: Calor aumenta Corrente)
+  var vFrioVoc = vocSTC * (1 + (kV * dF)); 
+  var vFrioVmp = vmpSTC * (1 + (kV * dF));
+  var iscFrio  = iscSTC * (1 + (kI * dF)); 
+  var impFrio  = impSTC * (1 + (kI * dF)); 
+  var pFrio    = pSTC   * (1 + (kP * dF)); 
+
+  var vCaloVoc = vocSTC * (1 + (kV * dC)); 
+  var vCaloVmp = vmpSTC * (1 + (kV * dC)); 
+  var iscCalo  = iscSTC * (1 + (kI * dC)); // MAIOR QUE FRIO
+  var impCalo  = impSTC * (1 + (kI * dC)); // MAIOR QUE FRIO
+  var pCalo    = pSTC   * (1 + (kP * dC)); 
+
+  var valoresC = [
+    [vFrioVoc], // Índice 0 (Linha 6)
+    [vFrioVmp], // Índice 1 (Linha 7)
+    [iscFrio],  // Índice 2 (Linha 8)
+    [impFrio],  // Índice 3 (Linha 9)
+    [pFrio],    // Índice 4 (Linha 10)
+    [vCaloVoc], // Índice 5 (Linha 11)
+    [vCaloVmp], // Índice 6 (Linha 12)
+    [iscCalo],  // Índice 7 (Linha 13)
+    [impCalo],  // Índice 8 (Linha 14)
+    [pCalo]     // Índice 9 (Linha 15)
+  ];
+
+  // Escrita Forçada na Coluna C
+  dash.getRange("C6:C15").setValues(valoresC);
+  
+  // <-- MODIFICADO: Lógica para aplicar os multiplicadores corretos
+  var valoresF = valoresC.map(function(r, index) {
+    // Índices 2, 3, 7 e 8 correspondem às linhas de Corrente (F8, F9, F13 e F14)
+    if (index === 2 || index === 3 || index === 7 || index === 8) {
+      return [r[0] * paralelos]; 
+    } else {
+      return [r[0] * qtdTotalModulos]; // As outras mantêm a multiplicação pelo total de módulos
+    }
+  });
+
+  dash.getRange("F6:F15").setValues(valoresF);
+  
+  SpreadsheetApp.flush();
+  return { vFrioVoc: vFrioVoc, vCaloVmp: vCaloVmp, iscCalo: iscCalo, vCaloVoc: vCaloVoc };
+}
+
+
+/**
+ * FUNÇÃO PRINCIPAL (ATUALIZADA)
+ * Agora utiliza a Coluna J da aba Inversores (Corrente Max SC) para a validação de segurança.
+ */
+function executarCalculosCompletos() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var dash = ss.getSheetByName("Dashboard");
+  var modSheet = ss.getSheetByName("Modulos");
+  var invSheet = ss.getSheetByName("Inversores");
+
+  // 1. LIMPEZA DE CACHE E CAPTURA DE ENTRADAS
+  SpreadsheetApp.flush();
+  var selMod = dash.getRange("M3").getDisplayValue().toString().trim();
+  var selInv = dash.getRange("M5").getDisplayValue().toString().trim();
+  
+  if (!selMod || !selInv || selMod === "" || selInv === "") {
+    SpreadsheetApp.getUi().alert("Por favor, selecione o Módulo (M3) e o Inversor (M5).");
+    return;
+  }
+
+  // 2. BUSCA DE DADOS NAS ABAS TÉCNICAS
+  var mData = modSheet.getDataRange().getValues();
+  var iData = invSheet.getDataRange().getValues();
+  
+  var m = mData.find(r => r[0].toString().trim().toLowerCase() === selMod.toLowerCase());
+  var inv = iData.find(r => r[0].toString().trim().toLowerCase() === selInv.toLowerCase());
+
+  if (!m || !inv) {
+    SpreadsheetApp.getUi().alert("Equipamento não encontrado. Verifique se o nome na aba técnica é idêntico ao menu.");
+    return;
+  }
+
+  // PREENCHE A LINHA 4 (DADOS NOMINAIS STC)
+  var dadosNominais = [[m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8]]];
+  dash.getRange("D4:K4").setValues(dadosNominais);
+  dash.getRange("B4").setValue(m[0]); 
+
+  // 3. CÁLCULOS TÉRMICOS (Preenche a tabela C6:C15 e F6:F15)
+  var termos = atribuirCalculosTemperatura(dash, m);
+  if (!termos) return; 
+
+  // 4. VARIÁVEIS DO INVERSOR E PROJETO
+  var vMaxInv = inv[1];
+  var vMinMPPT = inv[3];
+  var iMaxMPPT = inv[5]; 
+  var pInvNominal = inv[7];
+  var iMaxScInv = inv[9]; 
+  var pSTC = m[1];
+
+  var qtdTotalModulos = dash.getRange("M7").getValue() || 0;
+  var inputsPorInversor = dash.getRange("M9").getValue() || 1;
+  var qtdInversores = dash.getRange("M11").getValue() || 1;
+  var paralelosM13 = dash.getRange("M13").getValue() || 1;
+
+  // 5. CÁLCULOS DE ARRANJO
+  var modPorString = (qtdTotalModulos / (inputsPorInversor * qtdInversores));
+  var numModulosEmSerie = modPorString / paralelosM13;
+
+  // Tensão no Frio (Baseada no Voc - C6) e Corrente no Calor (Baseada no Isc - C13)
+  var tensaoEntradaF22 = termos.vFrioVoc * numModulosEmSerie; 
+  var correnteEntradaG22 = termos.iscCalo * (inputsPorInversor / paralelosM13);
+
+  // 6. DIAGNÓSTICO DE SEGURANÇA
+  var motivoFalha = "Conforme";
+  var statusFinal = "CONFORME";
+
+  if (tensaoEntradaF22 > vMaxInv) {
+    motivoFalha = "Tensão no Frio (" + tensaoEntradaF22.toFixed(0) + "V) > Limite Inversor";
+    statusFinal = "DESCONFORME";
+  } else if (correnteEntradaG22 > iMaxScInv) { 
+    motivoFalha = "Isc Arranjo (" + correnteEntradaG22.toFixed(1) + "A) > Isc Máx Inversor (" + iMaxScInv + "A)";
+    statusFinal = "DESCONFORME";
+  } else if ((qtdTotalModulos * pSTC) > (pInvNominal * 1.5 * qtdInversores)) {
+    motivoFalha = "Superdimensionamento Crítico (>1.5)";
+    statusFinal = "SUPERDIMENSIONADO";
+  }
+
+  // 7. ESCRITA DOS RESULTADOS
+  dash.getRange("B17:I18").clearContent();
+  dash.getRange("B21:H22").clearContent();
+
+  dash.getRange("B17:I17").setValues([["Inversor", "Status", "P. Inversor", "Máx Mód/Str", "Mín Mód/Str", "Segurança", "Limite V", "Limite Isc"]]);
+  dash.getRange("B18:I18").setValues([[
+    selInv, statusFinal, pInvNominal + " W", 
+    Math.floor(vMaxInv / termos.vFrioVoc), Math.ceil(vMinMPPT / termos.vCaloVmp), 
+    (statusFinal !== "DESCONFORME" ? "✅" : "❌"), vMaxInv + " V", iMaxScInv + " A"
+  ]]);
+
+  // <-- MODIFICADO: Alterado H21 de "Paralelos" para "String"
+  dash.getRange("B21:H21").setValues([["Projeto", "Status", "Pot. Total", "Mód/String", "V. Ent (V)", "I. Ent (A)", "String"]]);
+  dash.getRange("B22:H22").setValues([[
+    "Global", statusFinal, (qtdTotalModulos * pSTC).toFixed(0) + " W", 
+    modPorString.toFixed(2), tensaoEntradaF22.toFixed(2), correnteEntradaG22.toFixed(2), paralelosM13
+  ]]);
+
+  // Diagnóstico Detalhado (C19)
+  dash.getRange("B19:C19").setValues([[motivoFalha, statusFinal]]);
+
+  // 8. ESTÉTICA E ALERTAS
+  var corFundo = (statusFinal === "CONFORME") ? "#d9ead3" : (statusFinal === "SUPERDIMENSIONADO" ? "#fff2cc" : "#f4cccc");
+  dash.getRange("C19").setBackground(corFundo).setFontWeight("bold");
+  dash.getRange("C22").setBackground(corFundo);
+
+  if (numModulosEmSerie % 1 !== 0) {
+    SpreadsheetApp.getUi().alert("Aviso: O arranjo resultou em " + numModulosEmSerie.toFixed(2) + " módulos em série. Verifique o fracionamento!");
+  }
+  
+  SpreadsheetApp.flush();
+}
+
+function onEdit(e) {
+  if (!e) return;
+  var sheet = e.source.getActiveSheet();
+  var range = e.range;
+  
+  // Se a edição foi na aba Dashboard e nas células M3 (Módulo) ou M5 (Inversor)
+  if (sheet.getName() === "Dashboard" && (range.getA1Notation() === "M3" || range.getA1Notation() === "M5")) {
+    executarCalculosCompletos();
+  }
+}
