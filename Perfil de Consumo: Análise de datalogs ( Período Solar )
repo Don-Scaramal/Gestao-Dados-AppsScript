@@ -1,0 +1,409 @@
+/**
+ * SISTEMA DIURNO – VERSÃO SIMPLIFICADA
+ */
+
+function onOpen() {
+  var ui = SpreadsheetApp.getUi();
+  ui.createMenu('☀️ Gráfico Diurno')
+    .addItem('Atualizar gráfico e estatísticas', 'processarGrafico')
+    .addToUi();
+}
+
+function processarGrafico() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var abaSun = ss.getSheetByName("DASHBOARDSUN");
+  var abaDados = ss.getSheetByName("dadosdiurnos");
+  
+  if (!abaSun || !abaDados) {
+    ss.toast("Faltam abas DASHBOARDSUN ou dadosdiurnos", "Erro", 3);
+    return;
+  }
+  
+  // ----- PARÂMETROS -----
+  var tipo = abaSun.getRange("B3").getValue().toString().trim();
+  var mesNome = abaSun.getRange("D3").getValue().toString().trim();
+  var semTxt = abaSun.getRange("F3").getValue().toString().trim();
+  var diaRaw = abaSun.getRange("H3").getValue();
+  var anoRaw = abaSun.getRange("J3").getValue();
+  
+  var diaNum = parseInt(diaRaw);
+  if (isNaN(diaNum)) diaNum = 1;
+  
+  var semanaNum = 1;
+  var match = semTxt.match(/\d+/);
+  if (match) semanaNum = parseInt(match[0]);
+  if (semanaNum < 1) semanaNum = 1;
+  if (semanaNum > 5) semanaNum = 5;
+  
+  var mesesMap = {
+    "janeiro":0, "fevereiro":1, "março":2, "abril":3, "maio":4, "junho":5,
+    "julho":6, "agosto":7, "setembro":8, "outubro":9, "novembro":10, "dezembro":11
+  };
+  var mesNum = mesesMap[mesNome.toLowerCase()];
+  if (mesNum === undefined && tipo !== "Anual") {
+    ss.toast("Mês inválido em D3. Use 'Janeiro'...'Dezembro'", "Aviso", 3);
+    return;
+  }
+  
+  var ano = parseInt(anoRaw);
+  if (isNaN(ano)) ano = 2025;
+  
+  // ----- LEITURA DA ABA dadosdiurnos (área A até BH) -----
+  var dados = abaDados.getDataRange().getValues();
+  var registos = []; // { data, hora, potenciaW }
+  
+  for (var i = 2; i < dados.length; i++) {
+    var linha = dados[i];
+    for (var col = 0; col <= dados[0].length - 4; col += 4) {
+      var dataRaw = linha[col+1];
+      var horaRaw = linha[col+2];
+      var potRaw = linha[col+3];
+      
+      if (!dataRaw || !horaRaw || potRaw === undefined || potRaw === "") continue;
+      
+      // Data
+      var dataObj = null;
+      if (dataRaw instanceof Date) {
+        dataObj = dataRaw;
+      } else if (typeof dataRaw === "string") {
+        var partes = dataRaw.split("/");
+        if (partes.length === 3) {
+          dataObj = new Date(parseInt(partes[2]), parseInt(partes[1])-1, parseInt(partes[0]));
+        }
+      }
+      if (!dataObj || isNaN(dataObj.getTime())) continue;
+      
+      // Potência – assumindo que já é número (sem vírgulas)
+      var potenciaW = parseFloat(potRaw);
+      if (isNaN(potenciaW)) continue;
+      
+      // Hora
+      var horaNum = (typeof horaRaw === "string") ? parseInt(horaRaw.split(":")[0]) : horaRaw;
+      if (isNaN(horaNum)) continue;
+      
+      registos.push({ data: dataObj, hora: horaNum, potenciaW: potenciaW });
+    }
+  }
+  
+  if (registos.length === 0) {
+    ss.toast("Nenhum dado válido em 'dadosdiurnos'. Verifique se as potências são números (sem vírgulas).", "Erro", 5);
+    return;
+  }
+  
+  function getSemana(d) {
+    var data = new Date(d);
+    data.setHours(0,0,0,0);
+    data.setDate(data.getDate() + 3 - (data.getDay() + 6) % 7);
+    var semana1 = new Date(data.getFullYear(), 0, 4);
+    return 1 + Math.round(((data - semana1) / 86400000 - 3 + (semana1.getDay() + 6) % 7) / 7);
+  }
+  
+  abaSun.getRange("K1:O200").clearContent();
+  var matrizGrafico = [];
+  var titulo = "";
+  var unidadeY = "";
+  
+  // ======================= 1. ANUAL =======================
+  if (tipo === "Anual") {
+    var filtro = registos.filter(r => r.data.getFullYear() === ano);
+    if (!filtro.length) { ss.toast("Sem dados para " + ano, "Aviso", 3); return; }
+    
+    var totalWh = 0;
+    for (var i=0; i<filtro.length; i++) totalWh += filtro[i].potenciaW;
+    var totalMWh = totalWh / 1000000;
+    var mediaMensalMWh = totalMWh / 12;
+    var mediaSemanalKWh = (totalWh / 52) / 1000;
+    var mediaDiariaKWh = (totalWh / 365) / 1000;
+    var mediaHoraKWh = (totalWh / filtro.length) / 1000;
+    
+    var meses = {};
+    for (var i=0; i<filtro.length; i++) {
+      var m = filtro[i].data.getMonth();
+      meses[m] = (meses[m] || 0) + filtro[i].potenciaW;
+    }
+    var mesesNomes = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
+    var maxMes = "", maxMesVal = 0, minMes = "", minMesVal = Infinity;
+    for (var m in meses) {
+      var valMWh = meses[m] / 1000000;
+      if (valMWh > maxMesVal) { maxMesVal = valMWh; maxMes = mesesNomes[m]; }
+      if (valMWh < minMesVal) { minMesVal = valMWh; minMes = mesesNomes[m]; }
+    }
+    
+    var semanas = {};
+    for (var i=0; i<filtro.length; i++) {
+      var s = getSemana(filtro[i].data);
+      semanas[s] = (semanas[s] || 0) + filtro[i].potenciaW;
+    }
+    var maxSem = 0, maxSemVal = 0, minSem = 0, minSemVal = Infinity;
+    for (var s in semanas) {
+      var valKWh = semanas[s] / 1000;
+      if (valKWh > maxSemVal) { maxSemVal = valKWh; maxSem = s; }
+      if (valKWh < minSemVal) { minSemVal = valKWh; minSem = s; }
+    }
+    
+    var dias = {};
+    for (var i=0; i<filtro.length; i++) {
+      var d = filtro[i].data.toDateString();
+      dias[d] = (dias[d] || 0) + filtro[i].potenciaW;
+    }
+    var maxDia = "", maxDiaVal = 0, minDia = "", minDiaVal = Infinity;
+    var maxDiaData = null, minDiaData = null;
+    for (var d in dias) {
+      var valKWh = dias[d] / 1000;
+      if (valKWh > maxDiaVal) { maxDiaVal = valKWh; maxDia = d; maxDiaData = new Date(d); }
+      if (valKWh < minDiaVal) { minDiaVal = valKWh; minDia = d; minDiaData = new Date(d); }
+    }
+    
+    var maxHoraW = 0, minHoraW = Infinity, maxHora = 0, minHora = 0;
+    var maxHData = null, minHData = null;
+    for (var i=0; i<filtro.length; i++) {
+      var p = filtro[i].potenciaW;
+      if (p > maxHoraW) { maxHoraW = p; maxHora = filtro[i].hora; maxHData = filtro[i].data; }
+      if (p < minHoraW) { minHoraW = p; minHora = filtro[i].hora; minHData = filtro[i].data; }
+    }
+    var maxHoraKW = maxHoraW / 1000;
+    var minHoraKW = minHoraW / 1000;
+    
+    matrizGrafico.push(["Mês", "Energia (KWh)"]);
+    for (var m=0; m<12; m++) {
+      matrizGrafico.push([mesesNomes[m], (meses[m] || 0) / 1000]);
+    }
+    titulo = "Consumo anual - " + ano;
+    unidadeY = "Energia (kWh)";
+    
+    var row = 2;
+    var set = (k,v,ref1,ref2,ref3) => { abaSun.getRange("K"+row).setValue(k); abaSun.getRange("L"+row).setValue(v); if(ref1) abaSun.getRange("M"+row).setValue(ref1); if(ref2) abaSun.getRange("N"+row).setValue(ref2); if(ref3) abaSun.getRange("O"+row).setValue(ref3); row++; };
+    set("Consumo Anual Diurno - MWh/ano", totalMWh);
+    set("Consumo Mensal Diurno - MWh/mês", mediaMensalMWh);
+    set("Consumo Semanal Diurno - kWh/semanal", mediaSemanalKWh);
+    set("Consumo Diário Diurno - kWh/dia", mediaDiariaKWh);
+    set("Consumo por Hora - kWh", mediaHoraKWh);
+    set("Mês de maior consumo - MWh", maxMesVal, maxMes);
+    set("Mês de menor consumo - MWh", minMesVal, minMes);
+    set("Semana de maior consumo - kWh", maxSemVal, "Semana "+maxSem);
+    set("Semana de menor consumo - kWh", minSemVal, "Semana "+minSem);
+    set("Dia de maior consumo - kWh", maxDiaVal, (maxDiaData?maxDiaData.getDate():""), (maxDiaData?mesesNomes[maxDiaData.getMonth()]:""));
+    set("Dia de menor consumo - kWh", minDiaVal, (minDiaData?minDiaData.getDate():""), (minDiaData?mesesNomes[minDiaData.getMonth()]:""));
+    set("Horário de maior consumo - kWh", maxHoraKW, ("0"+maxHora).slice(-2)+":00", maxHData?maxHData.getDate():"", maxHData?mesesNomes[maxHData.getMonth()]:"");
+    set("Horário de menor consumo - kWh", minHoraKW, ("0"+minHora).slice(-2)+":00", minHData?minHData.getDate():"", minHData?mesesNomes[minHData.getMonth()]:"");
+  }
+  
+  // ======================= 2. MENSAL =======================
+  else if (tipo === "Mensal") {
+    var filtro = registos.filter(r => r.data.getMonth() === mesNum && r.data.getFullYear() === ano);
+    if (!filtro.length) { ss.toast("Sem dados para " + mesNome, "Aviso",3); return; }
+    
+    var totalWh = 0;
+    for (var i=0; i<filtro.length; i++) totalWh += filtro[i].potenciaW;
+    var totalMWh = totalWh / 1000000;
+    var diasNoMes = new Date(ano, mesNum+1, 0).getDate();
+    var semanasNoMes = Math.ceil(diasNoMes / 7);
+    var mediaSemanalKWh = (totalWh / semanasNoMes) / 1000;
+    var mediaDiariaKWh = (totalWh / diasNoMes) / 1000;
+    var mediaHoraKWh = (totalWh / filtro.length) / 1000;
+    
+    var semanas = {};
+    for (var i=0; i<filtro.length; i++) {
+      var s = getSemana(filtro[i].data);
+      semanas[s] = (semanas[s] || 0) + filtro[i].potenciaW;
+    }
+    var maxSem = 0, maxSemVal = 0, minSem = 0, minSemVal = Infinity;
+    for (var s in semanas) { var v = semanas[s]/1000; if(v>maxSemVal){maxSemVal=v;maxSem=s;} if(v<minSemVal){minSemVal=v;minSem=s;} }
+    
+    var dias = {};
+    for (var i=0; i<filtro.length; i++) {
+      var d = filtro[i].data.getDate();
+      dias[d] = (dias[d] || 0) + filtro[i].potenciaW;
+    }
+    var maxDia = 0, maxDiaVal = 0, minDia = 0, minDiaVal = Infinity;
+    for (var d in dias) { var v = dias[d]/1000; if(v>maxDiaVal){maxDiaVal=v;maxDia=d;} if(v<minDiaVal){minDiaVal=v;minDia=d;} }
+    
+    // Encontrar maior e menor potência horária (corrigido)
+    var maxHoraW = 0, minHoraW = Infinity, maxHora = 0, minHora = 0;
+    var maxHData = null, minHData = null;
+    for (var i=0; i<filtro.length; i++) {
+      var p = filtro[i].potenciaW;
+      if (p > maxHoraW) { maxHoraW = p; maxHora = filtro[i].hora; maxHData = filtro[i].data; }
+      if (p < minHoraW) { minHoraW = p; minHora = filtro[i].hora; minHData = filtro[i].data; }
+    }
+    var maxHoraKW = maxHoraW / 1000;
+    var minHoraKW = minHoraW / 1000;
+    
+    // Gráfico em kW (dividir potência W por 1000)
+    matrizGrafico.push(["Dia", "Potência (kW)"]);
+    for (var d=1; d<=diasNoMes; d++) {
+      var kWh = (dias[d] || 0) / 1000;
+      matrizGrafico.push(["Dia " + d, kWh]);
+    }
+    titulo = "Consumo mensal - " + mesNome + " " + ano + " (kW)";
+    unidadeY = "Potência (kW)";
+    
+    var row = 2;
+    var set = (k,v,ref1,ref2) => { abaSun.getRange("K"+row).setValue(k); abaSun.getRange("L"+row).setValue(v); if(ref1) abaSun.getRange("M"+row).setValue(ref1); if(ref2) abaSun.getRange("N"+row).setValue(ref2); row++; };
+    set("Consumo Mensal Diurno - MWh/mês", totalMWh);
+    set("Consumo Semanal Diurno - kWh/semanal", mediaSemanalKWh);
+    set("Consumo Diário Diurno - kWh/dia", mediaDiariaKWh);
+    set("Consumo por Hora - kWh", mediaHoraKWh);
+    set("Semana de maior consumo - kWh", maxSemVal, "Semana "+maxSem);
+    set("Semana de menor consumo - kWh", minSemVal, "Semana "+minSem);
+    set("Dia de maior consumo - kWh", maxDiaVal, maxDia);
+    set("Dia de menor consumo - kWh", minDiaVal, minDia);
+    set("Horário de maior consumo - kWh", maxHoraKW, ("0"+maxHora).slice(-2)+":00", maxHData?maxHData.getDate():"");
+    set("Horário de menor consumo - kWh", minHoraKW, ("0"+minHora).slice(-2)+":00", minHData?minHData.getDate():"");
+  }
+  
+  // ======================= 3. SEMANAL =======================
+  else if (tipo === "Semanal") {
+    var primeiroDia = new Date(ano, mesNum, 1);
+    var diaSem = primeiroDia.getDay();
+    var ajuste = (diaSem === 0) ? 6 : diaSem - 1;
+    var inicio = new Date(ano, mesNum, 1 + (semanaNum-1)*7 - ajuste);
+    var fim = new Date(inicio); fim.setDate(inicio.getDate() + 6);
+    var filtro = registos.filter(r => r.data >= inicio && r.data <= fim);
+    if (!filtro.length) { ss.toast("Sem dados para semana " + semanaNum, "Aviso",3); return; }
+    
+    var totalWh = 0;
+    for (var i=0; i<filtro.length; i++) totalWh += filtro[i].potenciaW;
+    var totalKWh = totalWh / 1000;
+    var diasMap = {};
+    for (var i=0; i<filtro.length; i++) {
+      var d = filtro[i].data.toDateString();
+      diasMap[d] = (diasMap[d] || 0) + filtro[i].potenciaW;
+    }
+    var numDias = Object.keys(diasMap).length;
+    var mediaDiariaKWh = (totalWh / numDias) / 1000;
+    var mediaHoraKWh = (totalWh / filtro.length) / 1000;
+    
+    var maxDia = "", maxDiaVal = 0, minDia = "", minDiaVal = Infinity;
+    for (var d in diasMap) { var v = diasMap[d]/1000; if(v>maxDiaVal){maxDiaVal=v;maxDia=d;} if(v<minDiaVal){minDiaVal=v;minDia=d;} }
+    
+    var maxHoraW = 0, minHoraW = Infinity, maxHora = 0, minHora = 0;
+    for (var i=0; i<filtro.length; i++) {
+      var p = filtro[i].potenciaW;
+      if (p > maxHoraW) { maxHoraW = p; maxHora = filtro[i].hora; }
+      if (p < minHoraW) { minHoraW = p; minHora = filtro[i].hora; }
+    }
+    var maxHoraKW = maxHoraW / 1000;
+    var minHoraKW = minHoraW / 1000;
+    
+    // Gráfico em kW (dividir por 1000)
+    var diasOrdenados = Object.keys(diasMap).sort((a,b)=> new Date(a)-new Date(b));
+    matrizGrafico.push(["Dia", "Energia (kW)"]);
+    for (var i=0; i<diasOrdenados.length; i++) {
+      matrizGrafico.push([diasOrdenados[i], diasMap[diasOrdenados[i]]/1000]);
+    }
+    titulo = "Consumo semanal - " + mesNome + " semana " + semanaNum + " (kW)";
+    unidadeY = "Potência (kW)";
+    
+    var row = 2;
+    var set = (k,v,ref) => { abaSun.getRange("K"+row).setValue(k); abaSun.getRange("L"+row).setValue(v); if(ref) abaSun.getRange("M"+row).setValue(ref); row++; };
+    set("Consumo Semanal Diurno - kWh/semanal", totalKWh);
+    set("Consumo Diário Diurno - kWh/dia", mediaDiariaKWh);
+    set("Consumo por Hora - kWh", mediaHoraKWh);
+    set("Dia de maior consumo - kWh", maxDiaVal, maxDia);
+    set("Dia de menor consumo - kWh", minDiaVal, minDia);
+    set("Horário de maior consumo - kWh", maxHoraKW, ("0"+maxHora).slice(-2)+":00");
+    set("Horário de menor consumo - kWh", minHoraKW, ("0"+minHora).slice(-2)+":00");
+  }
+  
+  // ======================= 4. DIÁRIA =======================
+  else if (tipo === "Diária") {
+    var ultimoDia = new Date(ano, mesNum+1, 0).getDate();
+    if (diaNum < 1 || diaNum > ultimoDia) { ss.toast("Dia inválido para " + mesNome, "Aviso",3); return; }
+    var dataAlvo = new Date(ano, mesNum, diaNum);
+    var filtro = registos.filter(r => 
+      r.data.getDate() === dataAlvo.getDate() &&
+      r.data.getMonth() === dataAlvo.getMonth() &&
+      r.data.getFullYear() === dataAlvo.getFullYear()
+    );
+    if (!filtro.length) { ss.toast("Sem dados para " + dataAlvo.toLocaleDateString(), "Aviso",3); return; }
+    
+    var totalWh = 0;
+    for (var i=0; i<filtro.length; i++) totalWh += filtro[i].potenciaW;
+    var totalKWh = totalWh / 1000;
+    var mediaHoraKWh = totalKWh / filtro.length;
+    
+    var maxHoraW = 0, minHoraW = Infinity, maxHora = 0, minHora = 0;
+    for (var i=0; i<filtro.length; i++) {
+      var p = filtro[i].potenciaW;
+      if (p > maxHoraW) { maxHoraW = p; maxHora = filtro[i].hora; }
+      if (p < minHoraW) { minHoraW = p; minHora = filtro[i].hora; }
+    }
+    var maxHoraKW = maxHoraW / 1000;
+    var minHoraKW = minHoraW / 1000;
+    
+    // Gráfico em kW (potência W / 1000)
+    filtro.sort((a,b)=> a.hora - b.hora);
+    matrizGrafico.push(["Hora", "Potência (kW)"]);
+    for (var i=0; i<filtro.length; i++) {
+      matrizGrafico.push([filtro[i].hora+":00", filtro[i].potenciaW / 1000]);
+    }
+    titulo = "Consumo horário - " + dataAlvo.toLocaleDateString("pt-PT") + " (kW)";
+    unidadeY = "Potência (kW)";
+    
+    var row = 2;
+    var set = (k,v,ref) => { abaSun.getRange("K"+row).setValue(k); abaSun.getRange("L"+row).setValue(v); if(ref) abaSun.getRange("M"+row).setValue(ref); row++; };
+    set("Consumo Diário Diurno - kWh/dia", totalKWh);
+    set("Consumo por Hora - kWh", mediaHoraKWh);
+    set("Horário de maior consumo - kWh", maxHoraKW, ("0"+maxHora).slice(-2)+":00");
+    set("Horário de menor consumo - kWh", minHoraKW, ("0"+minHora).slice(-2)+":00");
+  }
+  else {
+    ss.toast("Tipo inválido em B3. Use Anual, Mensal, Semanal ou Diária.", "Aviso",3);
+    return;
+  }
+  
+  // ----- ESCRITA DOS DADOS PARA O GRÁFICO (colunas Z e AA) -----
+  abaSun.getRange("Z1:AA200").clearContent();
+  if (matrizGrafico.length > 1) {
+    for (var i=0; i<matrizGrafico.length; i++) {
+      abaSun.getRange("Z" + (i+1)).setValue(matrizGrafico[i][0]);
+      abaSun.getRange("AA" + (i+1)).setValue(matrizGrafico[i][1]);
+    }
+    // Formatar os valores numéricos (apenas para aparecer bem no gráfico)
+    abaSun.getRange("AA2:AA" + matrizGrafico.length).setNumberFormat("0.00");
+  }
+  
+  // Remover gráfico antigo
+  var charts = abaSun.getCharts();
+  for (var i=0; i<charts.length; i++) {
+    var c = charts[i];
+    if (c.getContainerInfo().getAnchorRow() === 4 && c.getContainerInfo().getAnchorColumn() === 2) {
+      abaSun.removeChart(c);
+    }
+  }
+  
+  // Criar novo gráfico
+  if (matrizGrafico.length > 1) {
+    var intervalo = abaSun.getRange("Z1:AA" + matrizGrafico.length);
+    var novoChart = abaSun.newChart()
+      .setChartType(Charts.ChartType.LINE)
+      .addRange(intervalo)
+      .setPosition(4, 2, 0, 0)
+      .setOption('title', titulo)
+      .setOption('width', 600)
+      .setOption('height', 300)
+      .setOption('legend', { position: 'right' })
+      .setOption('hAxis', { title: matrizGrafico[0][0] })
+      .setOption('vAxis', { title: unidadeY, format: '0.00' })
+      .setOption('curveType', 'function')
+      .setOption('pointSize', 5)
+      .setOption('lineWidth', 2)
+      .build();
+    abaSun.insertChart(novoChart);
+  }
+  
+  ss.toast(tipo + " atualizado com sucesso!", "Sucesso", 2);
+}
+
+// ======================= GATILHO INSTALÁVEL =======================
+function onEditInstalavel(e) {
+  if (!e) return;
+  var sheet = e.source.getActiveSheet();
+  if (sheet.getName() !== "DASHBOARDSUN") return;
+  var col = e.range.getColumn();
+  var row = e.range.getRow();
+  if ((col === 2 || col === 4 || col === 6 || col === 8 || col === 10) && row === 3) {
+    processarGrafico();
+  }
+}
