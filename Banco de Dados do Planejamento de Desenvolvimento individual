@@ -1,0 +1,141 @@
+/**
+ * Menu superior da Sociedade
+ */
+function onOpen() {
+  var ui = SpreadsheetApp.getUi();
+  ui.createMenu('⚔️ PDI Select')
+      .addItem('Salvar Acesso', 'salvarAcesso')
+      .addItem('Salvar Acesso Reserva', 'salvarAcessoReserva')
+      .addItem('Realizar Consulta', 'realizarConsulta')
+      .addToUi();
+}
+
+// =====================================================================
+// BLOCO 1: GUARDAR / ATUALIZAR DADOS
+// =====================================================================
+
+function salvarAcesso() {
+  executarSalvamento("Acesso");
+}
+
+function salvarAcessoReserva() {
+  executarSalvamento("AcessoReserva");
+}
+
+function executarSalvamento(nomeSeparadorOrigem) {
+  var folha = SpreadsheetApp.getActiveSpreadsheet();
+  var separadorOrigem = folha.getSheetByName(nomeSeparadorOrigem);
+  var ui = SpreadsheetApp.getUi();
+  
+  var data = separadorOrigem.getRange("A3").getValue();
+  var encontro = separadorOrigem.getRange("B3").getValue();
+  var responsavel = separadorOrigem.getRange("C3").getValue();
+  var colaborador = separadorOrigem.getRange("D3").getValue();
+  
+  if (colaborador === "" || encontro === "") {
+    ui.alert("Por favor, preenche o Colaborador e o Encontro antes de guardar.");
+    return;
+  }
+  
+  var separadorDestino = folha.getSheetByName(colaborador);
+  if (!separadorDestino) {
+    ui.alert("O separador do colaborador '" + colaborador + "' não existe.");
+    return;
+  }
+  
+  // Lê a coluna B inteira de uma só vez (Muito mais rápido e evita limites de execução)
+  var bloco = separadorOrigem.getRange("B1:B75").getValues();
+  
+  // Monta a linha com as exatas 32 colunas da tua base de dados
+  var dadosLinha = [
+    encontro,              // Coluna 1
+    "Número da pergunta"   // Coluna 2 (numeroPergunta)
+  ];
+  
+  // O CSV mostra que P1 = B4 (índice 3), R1 = B6 (índice 5), saltando de 5 em 5.
+  for (var i = 0; i < 14; i++) {
+    dadosLinha.push(bloco[3 + (i * 5)][0]); // Colunas Ímpares: Perguntas (B4, B9, B14...)
+    dadosLinha.push(bloco[5 + (i * 5)][0]); // Colunas Pares: Respostas (B6, B11, B16...)
+  }
+  
+  // Adiciona a Data e o Responsável no fim
+  dadosLinha.push(data);         // Coluna 31
+  dadosLinha.push(responsavel);  // Coluna 32
+  
+  // SISTEMA DE ATUALIZAÇÃO (Evita linhas duplicadas)
+  var dadosMembro = separadorDestino.getDataRange().getValues();
+  var linhaExistente = -1;
+  
+  for (var j = 0; j < dadosMembro.length; j++) {
+    if (dadosMembro[j][0] === encontro) { 
+      linhaExistente = j + 1; 
+      break;
+    }
+  }
+  
+  if (linhaExistente !== -1) {
+    // ATUALIZA o registo já existente
+    separadorDestino.getRange(linhaExistente, 1, 1, dadosLinha.length).setValues([dadosLinha]);
+    ui.alert("O " + encontro + " já existia na base e foi ATUALIZADO com as novas respostas!");
+  } else {
+    // CRIA um novo registo
+    separadorDestino.appendRow(dadosLinha);
+    ui.alert("As respostas do " + encontro + " foram guardadas com sucesso no separador de " + colaborador + "!");
+  }
+}
+
+
+// =====================================================================
+// BLOCO 2: CONSULTAR DADOS
+// =====================================================================
+
+function realizarConsulta() {
+  var folha = SpreadsheetApp.getActiveSpreadsheet();
+  var separadorConsulta = folha.getSheetByName("Consultas");
+  var ui = SpreadsheetApp.getUi();
+  
+  var encontroSelecionado = separadorConsulta.getRange("B3").getValue();
+  var colaboradorSelecionado = separadorConsulta.getRange("D3").getValue();
+  
+  if (colaboradorSelecionado === "" || encontroSelecionado === "") {
+    ui.alert("Seleciona um Colaborador e um Encontro para consultar.");
+    return;
+  }
+  
+  var separadorMembro = folha.getSheetByName(colaboradorSelecionado);
+  if (!separadorMembro) {
+    ui.alert("O separador de '" + colaboradorSelecionado + "' não foi encontrado.");
+    return;
+  }
+  
+  var dadosMembro = separadorMembro.getDataRange().getValues();
+  var linhaEncontrada = null;
+  
+  for (var i = 0; i < dadosMembro.length; i++) {
+    if (dadosMembro[i][0] === encontroSelecionado) { 
+      linhaEncontrada = dadosMembro[i];
+      break;
+    }
+  }
+  
+  if (linhaEncontrada === null) {
+    ui.alert("Nenhum dado guardado para o " + encontroSelecionado + " no separador de " + colaboradorSelecionado + ".");
+    return;
+  }
+  
+  // Preenche o Cabeçalho: Data (índice 30) e Responsável (índice 31)
+  separadorConsulta.getRange("A3").setValue(linhaEncontrada[30]); 
+  separadorConsulta.getRange("C3").setValue(linhaEncontrada[31]); 
+  
+  // Preenche cada pergunta e resposta no ecrã (Acompanhando o salto de 5 em 5 linhas)
+  for(var j = 0; j < 14; j++) {
+     var linhaPergunta = 4 + (j * 5); // 4, 9, 14...
+     var linhaResposta = 6 + (j * 5); // 6, 11, 16...
+     
+     // Índice 2 é a Pergunta 1, Índice 3 é a Resposta 1...
+     separadorConsulta.getRange("B" + linhaPergunta).setValue(linhaEncontrada[2 + (j * 2)]);
+     separadorConsulta.getRange("B" + linhaResposta).setValue(linhaEncontrada[3 + (j * 2)]);
+  }
+  
+  ui.alert("Consulta carregada com sucesso!");
+}
